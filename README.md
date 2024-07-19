@@ -28,48 +28,48 @@ Training Loop: Train the model to minimize the difference between the predicted 
 
 Here's a simplified implementation of each step:
 
-Step 1: Define the U-Net Model
-python
-Copy code
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
 
+# Step 1: Define the U-Net Model
 class UNet(nn.Module):
     def __init__(self, in_channels, out_channels, features=[64, 128, 256, 512]):
         super(UNet, self).__init__()
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        
+
         # Encoder
         for feature in features:
             self.encoder.append(self._block(in_channels, feature))
             in_channels = feature
-        
+
         # Bottleneck
         self.bottleneck = self._block(features[-1], features[-1] * 2)
-        
+
         # Decoder
         for feature in reversed(features):
             self.decoder.append(
                 nn.ConvTranspose2d(feature * 2, feature, kernel_size=2, stride=2)
             )
             self.decoder.append(self._block(feature * 2, feature))
-        
+
         # Final layer
         self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
-    
+
     def forward(self, x):
         skip_connections = []
         for enc in self.encoder:
             x = enc(x)
             skip_connections.append(x)
             x = self.pool(x)
-        
+
         x = self.bottleneck(x)
         skip_connections = skip_connections[::-1]
-        
+
         for idx in range(0, len(self.decoder), 2):
             x = self.decoder[idx](x)
             skip_connection = skip_connections[idx // 2]
@@ -77,9 +77,9 @@ class UNet(nn.Module):
                 x = F.interpolate(x, size=skip_connection.shape[2:])
             concat_skip = torch.cat((skip_connection, x), dim=1)
             x = self.decoder[idx + 1](concat_skip)
-        
+
         return self.final_conv(x)
-    
+
     def _block(self, in_channels, out_channels):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
@@ -87,57 +87,73 @@ class UNet(nn.Module):
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
         )
-Step 2: Define the Diffusion Process
-python
-Copy code
+
+# Step 2: Define the Diffusion Process
 class DiffusionModel(nn.Module):
     def __init__(self, unet):
         super(DiffusionModel, self).__init__()
         self.unet = unet
-    
+
     def forward(self, x, t):
+        t = t.unsqueeze(1).unsqueeze(2).unsqueeze(3).repeat(1, 1, x.size(2), x.size(3))  # Match t to x dimensions
         return self.unet(torch.cat([x, t], dim=1))
 
 def forward_diffusion(x_0, t, noise_schedule):
     noise = torch.randn_like(x_0)
-    alpha_t = noise_schedule[t]
+    t = t.long()  # Convert to long type
+    alpha_t = noise_schedule[t].to(x_0.device).unsqueeze(1).unsqueeze(2).unsqueeze(3)
     return torch.sqrt(alpha_t) * x_0 + torch.sqrt(1 - alpha_t) * noise
 
 def reverse_diffusion(x_t, t, model, noise_schedule):
-    beta_t = 1 - noise_schedule[t]
+    t = t.long()  # Ensure t is long
+    beta_t = 1 - noise_schedule[t].to(x_t.device).unsqueeze(1).unsqueeze(2).unsqueeze(3)
     predicted_noise = model(x_t, t)
-    return (x_t - beta_t * predicted_noise) / torch.sqrt(noise_schedule[t])
-Step 3: Training Loop
-python
-Copy code
+    return (x_t - beta_t * predicted_noise) / torch.sqrt(noise_schedule[t].to(x_t.device).unsqueeze(1).unsqueeze(2).unsqueeze(3))
+
+# Synthetic Dataset
+class SyntheticDataset(Dataset):
+    def __init__(self, size, img_size):
+        self.size = size
+        self.img_size = img_size
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+        return torch.randn(3, self.img_size, self.img_size)
+
+# Step 3: Training Loop
 def train_model(model, dataloader, optimizer, num_epochs, noise_schedule):
     model.train()
     criterion = nn.MSELoss()
-    
+
     for epoch in range(num_epochs):
         for x_0 in dataloader:
-            t = torch.randint(0, len(noise_schedule), (x_0.size(0), 1, 1, 1)).float()
+            x_0 = x_0.to(device)
+            t = torch.randint(0, len(noise_schedule), (x_0.size(0),)).to(device)
             x_t = forward_diffusion(x_0, t, noise_schedule)
             predicted_noise = model(x_t, t)
-            noise = (x_t - torch.sqrt(noise_schedule[t]) * x_0) / torch.sqrt(1 - noise_schedule[t])
-            
+            noise = (x_t - torch.sqrt(noise_schedule[t.long()]).to(device).unsqueeze(1).unsqueeze(2).unsqueeze(3) * x_0) / torch.sqrt(1 - noise_schedule[t.long()]).to(device).unsqueeze(1).unsqueeze(2).unsqueeze(3)
+
             loss = criterion(predicted_noise, noise)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        
+
         print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
 
 # Example usage
-unet = UNet(in_channels=3, out_channels=3)
-diffusion_model = DiffusionModel(unet)
-optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=1e-4)
-noise_schedule = torch.linspace(0.0001, 0.02, 1000)  # Example noise schedule
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+unet = UNet(in_channels=4, out_channels=3).to(device)  # in_channels is 4 because we concatenate t
+diffusion_model = DiffusionModel(unet).to(device)
+optimizer = optim.Adam(diffusion_model.parameters(), lr=1e-4)
+noise_schedule = torch.linspace(0.0001, 0.02, 1000).to(device)  # Example noise schedule
 
-# Assuming `dataloader` is defined
-# train_model(diffusion_model, dataloader, optimizer, num_epochs=10, noise_schedule=noise_schedule)
-This is a high-level implementation and might require adjustments based on the specific details of your task and dataset.
+# Define the synthetic dataset and dataloader
+dataset = SyntheticDataset(size=1000, img_size=64)
+dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-
+# Train the model
+train_model(diffusion_model, dataloader, optimizer, num_epochs=10, noise_schedule=noise_schedule)
 
 
