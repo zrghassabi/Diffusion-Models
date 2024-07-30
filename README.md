@@ -16,4 +16,9 @@ Diffusion models have shown impressive results in generating high-quality images
 Implementing a diffusion model based on a U-Net architecture in PyTorch involves several steps, including setting up the U-Net model, defining the diffusion process, and training the model. Below is a high-level overview along with a simplified implementation:
 
 
+check:
+
+https://huggingface.co/docs/diffusers/index
+
+
 
