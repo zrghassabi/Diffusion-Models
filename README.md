@@ -20,5 +20,7 @@ check:
 
 https://huggingface.co/docs/diffusers/index
 
+https://huggingface.co/docs/diffusers/tutorials/tutorial_overview
+
 
 
